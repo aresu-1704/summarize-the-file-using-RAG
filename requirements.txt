@@ -2,5 +2,14 @@
 streamlit
 langchain
 faiss-cpu
+
+# PDF processing
 pypdf
+pdfplumber
+pdf2image
+pytesseract
+Pillow
+opencv-python
+
+# Other loaders
 python-docx
