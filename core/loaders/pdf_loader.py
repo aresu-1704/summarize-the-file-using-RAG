@@ -4,6 +4,7 @@ PDF Loader nâng cao với khả năng xử lý 2 cột và OCR.
 Module này cung cấp các tính năng:
 - Trích xuất text từ PDF thông thường
 - Tự động phát hiện và xử lý bố cục 2 cột
+- Trích xuất và format table từ PDF
 - OCR cho PDF scan
 - OCR thông minh cho ảnh embedded (bỏ qua diagrams/charts)
 - Làm sạch text cho embedding tối ưu
@@ -40,6 +41,7 @@ class PDFLoader:
         enable_ocr: bool = True,
         image_dpi: int = 300,
         enable_image_extraction: bool = True,
+        enable_table_extraction: bool = True,
         enable_text_cleaning: bool = True,
         min_image_confidence: float = 60.0,
         min_image_words: int = 5
@@ -54,6 +56,7 @@ class PDFLoader:
             enable_ocr: Bật/tắt OCR cho trang scan
             image_dpi: DPI khi convert PDF sang ảnh
             enable_image_extraction: Bật/tắt OCR cho ảnh embedded
+            enable_table_extraction: Bật/tắt trích xuất table
             enable_text_cleaning: Bật/tắt làm sạch text
             min_image_confidence: Ngưỡng confidence tối thiểu cho OCR ảnh (0-100)
             min_image_words: Số từ tối thiểu để coi ảnh có text hữu ích
@@ -64,6 +67,7 @@ class PDFLoader:
         self.enable_ocr = enable_ocr
         self.image_dpi = image_dpi
         self.enable_image_extraction = enable_image_extraction
+        self.enable_table_extraction = enable_table_extraction
         self.enable_text_cleaning = enable_text_cleaning
         self.min_image_confidence = min_image_confidence
         self.min_image_words = min_image_words
@@ -122,13 +126,13 @@ class PDFLoader:
     
     def _extract_page_text(self, page) -> str:
         """
-        Trích xuất text từ trang với phát hiện cột.
+        Trích xuất text từ trang với phát hiện cột và tables.
         
         Args:
             page: pdfplumber page object
             
         Returns:
-            Text đã trích xuất với thứ tự cột đúng
+            Text đã trích xuất với thứ tự cột đúng và tables
         """
         # Lấy từng từ với vị trí
         words = page.extract_words(
@@ -139,14 +143,25 @@ class PDFLoader:
         )
         
         if not words:
-            return ""
-        
-        # Phát hiện bố cục 2 cột
-        if self._is_two_column_layout(words, page):
-            return self._extract_two_column_text(words, page)
+            text = ""
         else:
-            # Cột đơn - trích xuất bình thường
-            return page.extract_text(x_tolerance=3, y_tolerance=3)
+            # Phát hiện bố cục 2 cột
+            if self._is_two_column_layout(words, page):
+                text = self._extract_two_column_text(words, page)
+            else:
+                # Cột đơn - trích xuất bình thường
+                text = page.extract_text(x_tolerance=3, y_tolerance=3)
+        
+        # Trích xuất tables nếu được bật
+        if self.enable_table_extraction:
+            tables_text = self._extract_tables_from_page(page)
+            if tables_text:
+                if text:
+                    text += "\n\n" + tables_text
+                else:
+                    text = tables_text
+        
+        return text if text else ""
     
     def _is_two_column_layout(self, words: List[Dict], page) -> bool:
         """
@@ -239,6 +254,94 @@ class PDFLoader:
             lines.append(' '.join(current_line))
         
         return '\n'.join(lines)
+    
+    def _extract_tables_from_page(self, page) -> str:
+        """
+        Trích xuất tables từ trang PDF.
+        
+        Args:
+            page: pdfplumber page object
+            
+        Returns:
+            Text được format từ các tables
+        """
+        tables = page.extract_tables()
+        
+        if not tables:
+            return ""
+        
+        formatted_tables = []
+        for table_idx, table in enumerate(tables, start=1):
+            # Bỏ qua table rỗng
+            if not table or all(not row for row in table):
+                continue
+            
+            formatted_table = self._format_table_as_text(table, table_idx)
+            if formatted_table:
+                formatted_tables.append(formatted_table)
+                logger.info(f"Trích xuất table {table_idx} ({len(table)} hàng)")
+        
+        if formatted_tables:
+            return "\n\n".join(formatted_tables)
+        
+        return ""
+    
+    def _format_table_as_text(self, table: List[List[str]], table_idx: int) -> str:
+        """
+        Format table thành text có cấu trúc dễ đọc (markdown-style).
+        
+        Args:
+            table: Table data (list of rows)
+            table_idx: Index của table trong trang
+            
+        Returns:
+            Text được format
+        """
+        if not table:
+            return ""
+        
+        # Làm sạch table - loại bỏ các cell None
+        cleaned_table = []
+        for row in table:
+            if row and any(cell for cell in row):  # Bỏ qua hàng rỗng hoàn toàn
+                cleaned_row = [str(cell).strip() if cell else "" for cell in row]
+                cleaned_table.append(cleaned_row)
+        
+        if not cleaned_table:
+            return ""
+        
+        # Xác định độ rộng cột
+        num_cols = max(len(row) for row in cleaned_table)
+        col_widths = [0] * num_cols
+        
+        for row in cleaned_table:
+            for i, cell in enumerate(row):
+                if i < num_cols:
+                    col_widths[i] = max(col_widths[i], len(cell))
+        
+        # Format table
+        lines = []
+        lines.append(f"\n[Bảng {table_idx}]")
+        lines.append("=" * 50)
+        
+        for row_idx, row in enumerate(cleaned_table):
+            # Pad các cell để căn chỉnh
+            formatted_cells = []
+            for i, cell in enumerate(row):
+                if i < num_cols:
+                    formatted_cells.append(cell.ljust(col_widths[i]))
+            
+            line = " | ".join(formatted_cells)
+            lines.append(line)
+            
+            # Thêm separator sau header (hàng đầu)
+            if row_idx == 0 and len(cleaned_table) > 1:
+                separator = "-+-".join(["-" * w for w in col_widths])
+                lines.append(separator)
+        
+        lines.append("=" * 50)
+        
+        return "\n".join(lines)
     
     def _extract_with_ocr(self, file_path: str, page_num: int) -> str:
         """
@@ -592,6 +695,7 @@ def load_pdf(
     ocr_languages: str = "vie+eng+kor+jpn+chi+rus+ara+fra+deu+ita+spa+pol+por+fin+heb+ind",
     enable_ocr: bool = True,
     enable_image_extraction: bool = True,
+    enable_table_extraction: bool = True,
     enable_text_cleaning: bool = True,
     min_image_confidence: float = 60.0,
     min_image_words: int = 5
@@ -604,6 +708,7 @@ def load_pdf(
         ocr_languages: Ngôn ngữ cho OCR (mặc định: đa ngôn ngữ)
         enable_ocr: Bật OCR cho trang scan
         enable_image_extraction: Bật trích xuất và OCR ảnh embedded
+        enable_table_extraction: Bật trích xuất table
         enable_text_cleaning: Bật làm sạch text
         min_image_confidence: Ngưỡng confidence tối thiểu cho OCR ảnh (0-100)
         min_image_words: Số từ tối thiểu để coi ảnh có text hữu ích
@@ -615,6 +720,7 @@ def load_pdf(
         ocr_languages=ocr_languages,
         enable_ocr=enable_ocr,
         enable_image_extraction=enable_image_extraction,
+        enable_table_extraction=enable_table_extraction,
         enable_text_cleaning=enable_text_cleaning,
         min_image_confidence=min_image_confidence,
         min_image_words=min_image_words
