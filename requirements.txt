@@ -1,0 +1,6 @@
+# Python dependencies for RAG application
+streamlit
+langchain
+faiss-cpu
+pypdf
+python-docx
