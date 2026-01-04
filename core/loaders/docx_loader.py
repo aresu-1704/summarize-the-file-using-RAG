@@ -4,8 +4,12 @@ DOCX Loader nâng cao cho RAG application.
 Module này cung cấp các tính năng:
 - Trích xuất text từ DOCX thông thường
 - Trích xuất và format table từ DOCX
+- Xử lý charts/graphs với 3 trường hợp:
+  1. Trích xuất caption của đồ thị
+  2. Trích xuất bảng số liệu gốc (nếu có)
+  3. OCR hoặc mô tả lại nội dung đồ thị
 - OCR cho ảnh embedded
-- OCR thông minh với bộ lọc (bỏ qua diagrams/charts)
+- OCR thông minh với bộ lọc (bỏ qua diagrams/charts không cần thiết)
 - Làm sạch text cho embedding tối ưu
 """
 
@@ -41,6 +45,7 @@ class DOCXLoader:
         ocr_languages: str = "vie+eng+kor+jpn+chi+rus+ara+fra+deu+ita+spa+pol+por+fin+heb+ind",
         enable_image_extraction: bool = True,
         enable_table_extraction: bool = True,
+        enable_chart_extraction: bool = True,
         enable_text_cleaning: bool = True,
         min_image_confidence: float = 60.0,
         min_image_words: int = 5
@@ -52,6 +57,7 @@ class DOCXLoader:
             ocr_languages: Ngôn ngữ cho OCR (format Tesseract)
             enable_image_extraction: Bật/tắt OCR cho ảnh embedded
             enable_table_extraction: Bật/tắt trích xuất table
+            enable_chart_extraction: Bật/tắt xử lý đồ thị (caption, bảng gốc, OCR)
             enable_text_cleaning: Bật/tắt làm sạch text
             min_image_confidence: Ngưỡng confidence tối thiểu cho OCR ảnh (0-100)
             min_image_words: Số từ tối thiểu để coi ảnh có text hữu ích
@@ -59,6 +65,7 @@ class DOCXLoader:
         self.ocr_languages = ocr_languages
         self.enable_image_extraction = enable_image_extraction
         self.enable_table_extraction = enable_table_extraction
+        self.enable_chart_extraction = enable_chart_extraction
         self.enable_text_cleaning = enable_text_cleaning
         self.min_image_confidence = min_image_confidence
         self.min_image_words = min_image_words
@@ -101,7 +108,7 @@ class DOCXLoader:
     def _extract_content_in_order(self, doc) -> str:
         """
         Trích xuất nội dung theo thứ tự xuất hiện trong document.
-        Bao gồm paragraphs, tables, và images.
+        Bao gồm paragraphs, tables, images, và charts với xử lý đặc biệt.
         
         Args:
             doc: python-docx Document object
@@ -111,7 +118,11 @@ class DOCXLoader:
         """
         content_parts = []
         
+        # Lấy thông tin về tất cả inline shapes (chứa charts) trong document
+        chart_contexts = self._extract_chart_contexts(doc) if self.enable_chart_extraction else []
+        
         # Iterate qua document body để giữ nguyên thứ tự
+        table_counter = 0
         for element in doc.element.body:
             if isinstance(element, CT_P):
                 # Paragraph
@@ -122,10 +133,16 @@ class DOCXLoader:
             
             elif isinstance(element, CT_Tbl) and self.enable_table_extraction:
                 # Table
+                table_counter += 1
                 table = Table(element, doc)
-                table_text = self._format_table_as_text(table, len([p for p in content_parts if "[Bảng" in p]) + 1)
+                table_text = self._format_table_as_text(table, table_counter)
                 if table_text:
                     content_parts.append(table_text)
+        
+        # Thêm thông tin charts đã trích xuất
+        if chart_contexts:
+            for chart_info in chart_contexts:
+                content_parts.append(chart_info)
         
         # Trích xuất ảnh embedded (nếu bật)
         if self.enable_image_extraction:
@@ -193,6 +210,229 @@ class DOCXLoader:
         
         logger.info(f"Trích xuất table {table_idx} ({len(table_data)} hàng)")
         return "\n".join(lines)
+    
+    def _extract_chart_contexts(self, doc) -> List[str]:
+        """
+        Trích xuất thông tin về charts/graphs với 3 trường hợp:
+        1. Có caption (từ paragraph xung quanh)
+        2. Có bảng số gốc (source data table)
+        3. OCR hoặc mô tả lại chart
+        
+        Args:
+            doc: python-docx Document object
+            
+        Returns:
+            List các đoạn text mô tả chart
+        """
+        chart_infos = []
+        chart_counter = 0
+        
+        # Tìm tất cả inline shapes (chứa charts) trong document
+        for paragraph in doc.paragraphs:
+            # Kiểm tra paragraph có chứa inline shape (drawing) không
+            if not paragraph._element.xpath('.//w:drawing'):
+                continue
+            
+            chart_counter += 1
+            chart_text_parts = [f"\n[Đồ thị {chart_counter}]", "=" * 50]
+            
+            # TRƯỜNG HỢP 1: Trích xuất caption
+            caption = self._extract_chart_caption(paragraph, doc)
+            if caption:
+                chart_text_parts.append(f"Caption: {caption}")
+            
+            # TRƯỜNG HỢP 2: Tìm bảng số liệu gốc
+            source_table = self._find_chart_source_table(paragraph, doc)
+            if source_table:
+                chart_text_parts.append(f"Bảng số liệu gốc:\n{source_table}")
+            
+            # TRƯỜNG HỢP 3: OCR hoặc mô tả chart
+            # Lấy ảnh chart và thử OCR (vì một số chart có label, axis text)
+            chart_description = self._describe_chart_image(paragraph)
+            if chart_description:
+                chart_text_parts.append(f"Nội dung đồ thị:\n{chart_description}")
+            
+            chart_text_parts.append("=" * 50)
+            
+            # Chỉ thêm nếu có ít nhất một thông tin (caption, data, hoặc description)
+            if len(chart_text_parts) > 3:  # Nhiều hơn header và footer
+                chart_infos.append("\n".join(chart_text_parts))
+                logger.info(f"Trích xuất đồ thị {chart_counter}")
+        
+        return chart_infos
+    
+    def _extract_chart_caption(self, chart_paragraph, doc) -> str:
+        """
+        Trích xuất caption của chart từ paragraph xung quanh.
+        
+        Heuristic:
+        - Tìm paragraph ngay trước/sau chart
+        - Caption thường bắt đầu với "Hình", "Biểu đồ", "Figure", "Chart", etc.
+        - Hoặc paragraph ngắn (<200 ký tự) gần chart
+        
+        Args:
+            chart_paragraph: Paragraph chứa chart
+            doc: Document object
+            
+        Returns:
+            Caption text hoặc empty string
+        """
+        caption_keywords = ["hình", "biểu đồ", "đồ thị", "figure", "chart", "graph", "diagram"]
+        
+        # Tìm vị trí của chart paragraph
+        try:
+            chart_idx = doc.paragraphs.index(chart_paragraph)
+        except ValueError:
+            return ""
+        
+        # Kiểm tra paragraph ngay sau (caption thường ở dưới chart)
+        if chart_idx + 1 < len(doc.paragraphs):
+            next_para = doc.paragraphs[chart_idx + 1].text.strip()
+            if next_para and len(next_para) < 200:
+                # Check có keyword không
+                if any(keyword in next_para.lower() for keyword in caption_keywords):
+                    return next_para
+                # Hoặc paragraph ngắn ngay sau chart cũng có thể là caption
+                if len(next_para) < 100:
+                    return next_para
+        
+        # Kiểm tra paragraph ngay trước (caption đôi khi ở trên)
+        if chart_idx > 0:
+            prev_para = doc.paragraphs[chart_idx - 1].text.strip()
+            if prev_para and any(keyword in prev_para.lower() for keyword in caption_keywords):
+                return prev_para
+        
+        return ""
+    
+    def _find_chart_source_table(self, chart_paragraph, doc) -> str:
+        """
+        Tìm bảng số liệu gốc tạo ra chart (nếu có).
+        
+        Heuristic:
+        - Bảng gốc thường nằm gần chart (trong 3 elements trước/sau)
+        - Bảng có cấu trúc số liệu (nhiều số)
+        
+        Args:
+            chart_paragraph: Paragraph chứa chart
+            doc: Document object
+            
+        Returns:
+            Formatted table text hoặc empty string
+        """
+        # Tìm vị trí chart trong body elements
+        chart_element = chart_paragraph._element
+        body_elements = list(doc.element.body)
+        
+        try:
+            chart_idx = body_elements.index(chart_element)
+        except ValueError:
+            return ""
+        
+        # Tìm trong range 5 elements trước và 3 elements sau
+        search_range_before = range(max(0, chart_idx - 5), chart_idx)
+        search_range_after = range(chart_idx + 1, min(len(body_elements), chart_idx + 4))
+        
+        # Ưu tiên tìm sau chart trước (logic: chart → bảng gốc)
+        for idx in list(search_range_after) + list(search_range_before):
+            element = body_elements[idx]
+            if isinstance(element, CT_Tbl):
+                table = Table(element, doc)
+                # Kiểm tra xem table có phải data table không (chứa nhiều số)
+                if self._is_data_table(table):
+                    return self._format_table_as_text(table, 0).replace("[Bảng 0]", "").strip()
+        
+        return ""
+    
+    def _is_data_table(self, table: Table) -> bool:
+        """
+        Kiểm tra table có phải là data table (chứa số liệu) không.
+        
+        Args:
+            table: Table object
+            
+        Returns:
+            True nếu là data table
+        """
+        if not table.rows or len(table.rows) < 2:
+            return False
+        
+        number_count = 0
+        total_cells = 0
+        
+        for row in table.rows:
+            for cell in row.cells:
+                text = cell.text.strip()
+                if text:
+                    total_cells += 1
+                    # Kiểm tra cell có chứa số không
+                    if any(char.isdigit() for char in text):
+                        number_count += 1
+        
+        # Nếu >= 40% cells chứa số → data table
+        if total_cells > 0:
+            number_ratio = number_count / total_cells
+            return number_ratio >= 0.4
+        
+        return False
+    
+    def _describe_chart_image(self, chart_paragraph) -> str:
+        """
+        OCR hoặc mô tả chart image để trích xuất text labels, axis, values.
+        
+        Args:
+            chart_paragraph: Paragraph chứa chart
+            
+        Returns:
+            Mô tả hoặc OCR text từ chart
+        """
+        # Thử lấy chart image và OCR
+        # Chart trong DOCX thường được embed trong Drawing
+        try:
+            # Lấy drawing element
+            drawings = chart_paragraph._element.xpath('.//w:drawing')
+            if not drawings:
+                return ""
+            
+            # Lấy image data từ drawing (nếu chart được render thành image)
+            # Note: python-docx không support trực tiếp chart object, 
+            # nhưng chart thường có preview image
+            
+            # Tìm blip (image reference) trong drawing
+            blips = drawings[0].xpath('.//a:blip')
+            if not blips:
+                return "Không thể trích xuất nội dung đồ thị (chưa có ảnh preview)"
+            
+            # Lấy relationship ID
+            rId = blips[0].get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed')
+            if not rId:
+                return ""
+            
+            # Lấy image part từ relationship
+            image_part = chart_paragraph.part.related_parts[rId]
+            image_bytes = image_part.blob
+            
+            # OCR image
+            image = Image.open(io.BytesIO(image_bytes))
+            
+            # Tiền xử lý ảnh
+            processed_image = self._preprocess_image(image)
+            
+            # OCR với config tối ưu cho chart (có axis labels, numbers)
+            text = pytesseract.image_to_string(
+                processed_image,
+                lang=self.ocr_languages,
+                config='--psm 11'  # PSM 11: Sparse text (tốt cho chart labels)
+            )
+            
+            text = text.strip()
+            if text and len(text) > 10:  # Chỉ return nếu có nội dung đủ
+                return f"Text từ OCR: {text}"
+            else:
+                return "Đồ thị không chứa text có thể đọc được"
+            
+        except Exception as e:
+            logger.debug(f"Không thể OCR chart: {e}")
+            return ""
     
     def _extract_images_from_document(self, doc) -> str:
         """
@@ -400,6 +640,7 @@ def load_docx(
     ocr_languages: str = "vie+eng+kor+jpn+chi+rus+ara+fra+deu+ita+spa+pol+por+fin+heb+ind",
     enable_image_extraction: bool = True,
     enable_table_extraction: bool = True,
+    enable_chart_extraction: bool = True,
     enable_text_cleaning: bool = True,
     min_image_confidence: float = 60.0,
     min_image_words: int = 5
@@ -412,6 +653,7 @@ def load_docx(
         ocr_languages: Ngôn ngữ cho OCR (mặc định: đa ngôn ngữ)
         enable_image_extraction: Bật trích xuất và OCR ảnh embedded
         enable_table_extraction: Bật trích xuất table
+        enable_chart_extraction: Bật xử lý đồ thị (caption, bảng gốc, OCR)
         enable_text_cleaning: Bật làm sạch text
         min_image_confidence: Ngưỡng confidence tối thiểu cho OCR ảnh (0-100)
         min_image_words: Số từ tối thiểu để coi ảnh có text hữu ích
@@ -423,8 +665,10 @@ def load_docx(
         ocr_languages=ocr_languages,
         enable_image_extraction=enable_image_extraction,
         enable_table_extraction=enable_table_extraction,
+        enable_chart_extraction=enable_chart_extraction,
         enable_text_cleaning=enable_text_cleaning,
         min_image_confidence=min_image_confidence,
         min_image_words=min_image_words
     )
     return loader.load_docx(file_path)
+
