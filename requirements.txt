@@ -5,11 +5,16 @@ faiss-cpu
 
 # PDF processing
 pypdf
+PyMuPDF
 pdfplumber
 pdf2image
 pytesseract
 Pillow
 opencv-python
+chardet
 
 # Other loaders
 python-docx
+
+# PDF creation (for testing)
+fpdf2
