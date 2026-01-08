@@ -1,1 +1,1 @@
-# Chunking module initialization
+from .splitter import splitter
