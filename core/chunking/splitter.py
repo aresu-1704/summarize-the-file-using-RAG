@@ -44,16 +44,14 @@ def chunk_documents(documents: List[Dict[str, Any]], chunk_size: int = 500, chun
     for doc in documents:
         chunks = chunk_text(doc["text"], chunk_size, chunk_overlap)
         for i, chunk in enumerate(chunks):
+            # Copy metadata và thêm chunk info
+            chunk_metadata = doc["metadata"].copy()
+            chunk_metadata["chunk"] = i + 1
+            chunk_metadata["total_chunks"] = len(chunks)
+            
             chunked_documents.append({
                 "text": chunk,
-                "metadata": {
-                    "page": doc["metadata"]["page"],
-                    "source": doc["metadata"]["source"],
-                    "chunk": i + 1,
-                    "total_chunks": len(chunks),
-                    "processing_method": doc["metadata"]["processing_method"],
-                    "total_pages": doc["metadata"]["total_pages"]
-                }
+                "metadata": chunk_metadata
             })
     
     return chunked_documents

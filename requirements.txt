@@ -1,9 +1,6 @@
-# Python dependencies for RAG application
 streamlit
 langchain
 faiss-cpu
-
-# PDF processing
 pypdf
 PyMuPDF
 pdfplumber
@@ -12,9 +9,9 @@ pytesseract
 Pillow
 opencv-python
 chardet
-
-# Other loaders
 python-docx
-
-# PDF creation (for testing)
+sentence-transformers
+torch
+google-genai
+python-dotenv
 fpdf2

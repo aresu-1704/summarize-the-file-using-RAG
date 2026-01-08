@@ -1,1 +1,1 @@
-# Embeddings module initialization
+from .embedder import embed_documents
