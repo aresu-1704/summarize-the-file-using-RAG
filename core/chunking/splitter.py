@@ -46,14 +46,10 @@ def chunk_documents(documents: List[Dict[str, Any]], chunk_size: int = 500, chun
         for i, chunk in enumerate(chunks):
             chunked_documents.append({
                 "text": chunk,
-                "metadata": {
-                    "page": doc["metadata"]["page"],
-                    "source": doc["metadata"]["source"],
+                "metadata": doc["metadata"].append({
                     "chunk": i + 1,
-                    "total_chunks": len(chunks),
-                    "processing_method": doc["metadata"]["processing_method"],
-                    "total_pages": doc["metadata"]["total_pages"]
-                }
+                    "total_chunks": len(chunks)
+                })
             })
     
     return chunked_documents

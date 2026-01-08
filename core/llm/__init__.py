@@ -1,1 +1,1 @@
-# LLM module initialization
+from .summarizer import GeminiSummarizer, create_summarizer

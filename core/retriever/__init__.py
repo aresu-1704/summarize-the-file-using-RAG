@@ -1,1 +1,1 @@
-# Retriever module initialization
+from .retriever import Retriever, create_retriever
