@@ -87,21 +87,20 @@ class Retriever:
         self,
         query: str,
         top_k: int = 5,
-        nprobe: int = 10,
         format_for_llm: bool = True
-    ) -> List[Dict[str, Any]]:
+    ) -> List[Dict[str, Any]] | str:
         """
-        Lấy top-k chunks relevant nhất với query.
-        Dùng cho Flow 2: Tóm tắt theo truy vấn.
+        Retrieve top-k most relevant chunks based on query.
+        Dùng cho Flow 2: Tóm tắt/trả lời theo truy vấn.
         
         Args:
-            query: Query string từ user
-            top_k: Số lượng chunks cần lấy
-            nprobe: Số clusters để search (cho IVF index)
-            format_for_llm: Format kết quả cho LLM
+            query: Query từ user
+            top_k: Số chunks muốn lấy
+            format_for_llm: Nếu True, return formatted text; nếu False, return raw chunks với metadata
         
         Returns:
-            List top-k documents hoặc formatted text
+            Nếu format_for_llm=True: str (formatted text)
+            Nếu format_for_llm=False: List[Dict] (raw chunks với metadata)
         """
         logger.info(f"Retrieving top-{top_k} chunks for query: '{query[:50]}...'")
         
@@ -111,20 +110,25 @@ class Retriever:
         # Search trong vector store
         results = self.vector_store.search(
             query_embedding=query_embedding,
-            top_k=top_k,
-            nprobe=nprobe
+            top_k=top_k
         )
         
-        logger.info(f"Retrieved {len(results)} relevant chunks")
+        logger.info(f"Retrieved {len(results)} chunks")
         
-        # Thêm neighboring chunks nếu bật
-        if self.add_neighboring_chunks:
-            results = self._add_neighboring_chunks(results)
+        # Add neighboring chunks nếu cần
+        if self.add_neighboring_chunks and results:
+            results = self._add_neighboring_chunks(results) # Removed num_neighbors as it's not in original signature
+            logger.info(f"After adding neighbors: {len(results)} chunks")
+        
+        # Sort by original order
+        results = sorted(results, key=lambda x: x.get('metadata', {}).get('chunk', 0))
         
         if format_for_llm:
-            results = self._format_for_llm(results)
-        
-        return results
+            # Format for LLM
+            return self._format_for_llm(results)
+        else:
+            # Return raw chunks
+            return results
     
     def _add_neighboring_chunks(
         self,

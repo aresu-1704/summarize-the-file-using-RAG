@@ -1,9 +1,6 @@
-# Python dependencies for RAG application
 streamlit
 langchain
 faiss-cpu
-
-# PDF processing
 pypdf
 PyMuPDF
 pdfplumber
@@ -12,17 +9,9 @@ pytesseract
 Pillow
 opencv-python
 chardet
-
-# Other loaders
 python-docx
-
-# Embeddings và Vector Store
-sentence-transformers  # Tạo embeddings từ text (sẽ tự cài numpy tương thích)
-torch  # Backend cho sentence-transformers
-
-# LLM Integration
-google-generativeai  # Google Gemini API
-python-dotenv  # Load environment variables từ .env
-
-# PDF creation (for testing)
+sentence-transformers
+torch
+google-genai
+python-dotenv
 fpdf2
